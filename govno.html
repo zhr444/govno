@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Симулятор жидкого стула</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #1a1a1a;
+    overflow: hidden;
+    font-family: Arial, sans-serif;
+  }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 10px; left: 10px;
+    color: #eee;
+    background: rgba(0,0,0,0.5);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px; line-height: 1.5;
+    user-select: none;
+  }
+  #hud b { color: #ffb347; }
+  kbd {
+    background: #333;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid #555;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <b>Симулятор жидкого стула</b><br>
+  <kbd>ЛКМ (зажать)</kbd> — непрерывная подача<br>
+  <kbd>Пробел</kbd> — сброс<br>
+  Частиц: <span id="count">0</span>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const countEl = document.getElementById('count');
+
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Параметры симуляции
+const GRAVITY = 0.35;
+const VISCOSITY = 0.06;
+const REPULSION = 0.9;
+const DAMPING = 0.96;
+const INTERACTION_RADIUS = 45;
+const MAX_PARTICLES = 2000;
+
+const SPAWN_PER_FRAME = 6;     // ← NEW: сколько частиц добавлять за кадр при зажатой мыши
+const SPAWN_JITTER = 25;       // ← NEW: разброс вокруг курсора
+
+class Particle {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.vx = (Math.random() - 0.5) * 4;
+    this.vy = (Math.random() - 0.5) * 4;
+    this.r = 4 + Math.random() * 4;
+    const shade = 60 + Math.random() * 70;
+    this.color = `rgb(${Math.floor(shade + 40)}, ${Math.floor(shade * 0.55)}, ${Math.floor(shade * 0.2)})`;
+  }
+
+  update(particles, grid) {
+    this.vy += GRAVITY;
+
+    const cellSize = INTERACTION_RADIUS;
+    const cx = Math.floor(this.x / cellSize);
+    const cy = Math.floor(this.y / cellSize);
+
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const bucket = grid[gx + ',' + gy];
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const other = bucket[i];
+          if (other === this) continue;
+          const dx = other.x - this.x;
+          const dy = other.y - this.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < 0.01 || d2 > INTERACTION_RADIUS * INTERACTION_RADIUS) continue;
+          const dist = Math.sqrt(d2);
+
+          const attract = VISCOSITY * (1 - dist / INTERACTION_RADIUS);
+          this.vx += (dx / dist) * attract;
+          this.vy += (dy / dist) * attract;
+
+          const minDist = this.r + other.r;
+          if (dist < minDist) {
+            const push = REPULSION * (1 - dist / minDist);
+            this.vx -= (dx / dist) * push;
+            this.vy -= (dy / dist) * push;
+          }
+        }
+      }
+    }
+
+    this.vx *= DAMPING;
+    this.vy *= DAMPING;
+
+    this.x += this.vx;
+    this.y += this.vy;
+
+    if (this.x < this.r) { this.x = this.r; this.vx *= -0.4; }
+    if (this.x > W - this.r) { this.x = W - this.r; this.vx *= -0.4; }
+    if (this.y > H - this.r) {
+      this.y = H - this.r;
+      this.vy *= -0.15;
+      this.vx *= 0.85;
+    }
+    if (this.y < this.r) { this.y = this.r; this.vy *= -0.3; }
+  }
+
+  draw() {
+    ctx.fillStyle = this.color;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+let particles = [];
+
+function buildGrid() {
+  const cellSize = INTERACTION_RADIUS;
+  const grid = {};
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    const key = Math.floor(p.x / cellSize) + ',' + Math.floor(p.y / cellSize);
+    (grid[key] ||= []).push(p);
+  }
+  return grid;
+}
+
+function spawnBurst(x, y, count = 60) {
+  for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
+    particles.push(new Particle(
+      x + (Math.random() - 0.5) * 40,
+      y + (Math.random() - 0.5) * 40
+    ));
+  }
+}
+
+// ← NEW: отслеживание зажатой мыши/пальца
+let isMouseDown = false;
+let mouseX = 0, mouseY = 0;
+
+function updateMousePos(x, y) {
+  mouseX = x;
+  mouseY = y;
+}
+
+canvas.addEventListener('mousedown', e => {
+  isMouseDown = true;
+  updateMousePos(e.clientX, e.clientY);
+  spawnBurst(e.clientX, e.clientY, 40); // мгновенный первый «плевок»
+});
+
+canvas.addEventListener('mousemove', e => {
+  updateMousePos(e.clientX, e.clientY);
+});
+
+window.addEventListener('mouseup', () => {
+  isMouseDown = false;
+});
+
+// Тач-версия
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  isMouseDown = true;
+  const t = e.touches[0];
+  updateMousePos(t.clientX, t.clientY);
+  spawnBurst(t.clientX, t.clientY, 40);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  updateMousePos(t.clientX, t.clientY);
+}, { passive: false });
+
+window.addEventListener('touchend', () => {
+  isMouseDown = false;
+});
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    particles = [];
+  }
+});
+
+function drawBackground() {
+  ctx.fillStyle = '#0f0f12';
+  ctx.fillRect(0, 0, W, H);
+
+  const grd = ctx.createLinearGradient(0, H - 40, 0, H);
+  grd.addColorStop(0, '#2a2a30');
+  grd.addColorStop(1, '#15151a');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, H - 40, W, 40);
+}
+
+let lastCount = -1;
+function loop() {
+  // ← NEW: пока мышь зажата — непрерывно подсыпаем частицы под курсором
+  if (isMouseDown) {
+    for (let i = 0; i < SPAWN_PER_FRAME && particles.length < MAX_PARTICLES; i++) {
+      particles.push(new Particle(
+        mouseX + (Math.random() - 0.5) * SPAWN_JITTER,
+        mouseY + (Math.random() - 0.5) * SPAWN_JITTER
+      ));
+    }
+  }
+
+  drawBackground();
+
+  const grid = buildGrid();
+
+  for (let i = 0; i < particles.length; i++) {
+    particles[i].update(particles, grid);
+  }
+  for (let i = 0; i < particles.length; i++) {
+    particles[i].draw();
+  }
+
+  if (particles.length !== lastCount) {
+    countEl.textContent = particles.length;
+    lastCount = particles.length;
+  }
+
+  requestAnimationFrame(loop);
+}
+
+spawnBurst(W / 2, 100, 200);
+loop();
+</script>
+</body>
+</html>
